@@ -1,4 +1,4 @@
--- ARION FREECAM / FINAL v7.0
+-- ARION FREECAM / v7.1 - correccion RESET/UNDO sin apertura automatica del panel
 -- Cliente Roblox (Delta movil + PC). Sin grabacion, sin anclar al personaje.
 -- Interfaz de pestañas, dock rapido, control CINE independiente, luz reversible,
 -- reset/deshacer integral. F8 o doble toque esquina superior izquierda: recuperar.
@@ -769,7 +769,7 @@ end
 local snapFields={"speed","sensitivity","smooth","smoothStrength","baseFov",
     "controlsOpacity","quickOpacity","cineOpacity","light","darkness",
     "aim","locked","target","watch","offset","zoom","zoomValue",
-    "mode","tab","panelOpen","quickEnabled","quickFolded","cinePanelOpen",
+    "mode","tab","quickEnabled","quickFolded","cinePanelOpen",
     "otherHUD","active","pos","pitch","yaw"}
 local function captureSnapshot()
     local shot={sliderValues={},sliderOpen={},pickerOpen=picker.Visible,
@@ -800,7 +800,8 @@ local function resetAll()
     S.controlsOpacity=.68;S.quickOpacity=.9;S.cineOpacity=.88
     S.aim=1;S.locked=false;S.target=nil;S.watch=nil
     S.offset=Vector3.new(0,3,12);S.zoom=false;setZoom(.5)
-    S.mode=1;S.tab="MOVE";S.panelOpen=true;S.quickEnabled=true
+    -- RESET cambia ajustes, no debe desplegar el panel si estaba cerrado.
+    S.mode=1;S.tab="MOVE";S.quickEnabled=true
     S.quickFolded=false;S.cinePanelOpen=true;picker.Visible=false
     search.Text=""
     clearSliders()
