@@ -1,4 +1,4 @@
--- ARION FREECAM / v7.2 - acceso FOV flotante, compatible con v7.1
+-- ARION FREECAM / v7.2.1 - FOV invertido, compatible con v7.2
 -- Cliente Roblox (Delta movil + PC). Sin grabacion, sin anclar al personaje.
 -- Interfaz de pestañas, dock rapido, control CINE independiente, luz reversible,
 -- reset/deshacer integral. F8 o doble toque esquina superior izquierda: recuperar.
@@ -177,7 +177,7 @@ local fovClose=button(fovOverlay,"FOVClose","X",px(34,28),dim(1,-40,0,5),47)
 local fovTouch=make("Frame",fovOverlay,{Name="FOVTouchTarget",Size=dim(1,-30,0,36),
     Position=px(15,34),BackgroundTransparency=1,Active=true,ZIndex=45})
 local fovRail=panel(fovTouch,"FOVTrack",dim(1,-14,0,8),px(7,14),C.line,46,4)
-local fovKnob=panel(fovRail,"FOVKnob",px(24,24),UDim2.fromScale((70-30)/90,.5),C.accent,47,12)
+local fovKnob=panel(fovRail,"FOVKnob",px(24,24),UDim2.fromScale((120-70)/90,.5),C.accent,47,12)
 fovKnob.AnchorPoint=Vector2.new(.5,.5)
 fovRail.Active=true;fovKnob.Active=true
 
@@ -378,9 +378,10 @@ local smoothToggle=row(pages.MOVE,"SmoothToggle","Suavizado: ON",30)
 local smoothSlider=makeSlider(pages.MOVE,"SmoothStrength",40,(16-2)/28,
     function(v) return string.format("Intensidad suave  /  %d",math.floor(2+28*v+.5)) end,
     function(v) S.smoothStrength=math.floor(2+28*v+.5) end)
-local fovSlider=makeSlider(pages.MOVE,"FieldOfView",50,(70-30)/90,
-    function(v) return string.format("FOV base  /  %d",math.floor(30+90*v+.5)) end,
-    function(v) S.baseFov=math.floor(30+90*v+.5) end)
+-- FOV invertido: izquierda = campo amplio (aleja), derecha = campo cerrado (acerca).
+local fovSlider=makeSlider(pages.MOVE,"FieldOfView",50,(120-70)/90,
+    function(v) return string.format("FOV base  /  %d",math.floor(120-90*v+.5)) end,
+    function(v) S.baseFov=math.floor(120-90*v+.5) end)
 local movementHint=text(pages.MOVE,"MoveHint",
     "PC: WASD / QE / boton derecho. Movil: pad y mirada.",
     dim(1,-8,0,34),px(0,0),51,11)
