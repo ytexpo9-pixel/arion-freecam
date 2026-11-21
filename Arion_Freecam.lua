@@ -1,4 +1,4 @@
--- ARION FREECAM / v7.2.1 - FOV invertido, compatible con v7.2
+-- ARION FREECAM / v7.2.2 - camara restaurada y desplazamiento tactil, FOV invertido
 -- Cliente Roblox (Delta movil + PC). Sin grabacion, sin anclar al personaje.
 -- Interfaz de pestañas, dock rapido, control CINE independiente, luz reversible,
 -- reset/deshacer integral. F8 o doble toque esquina superior izquierda: recuperar.
@@ -29,7 +29,8 @@ for _,name in ipairs({"ArionFreecamFinal", "ArionFreecamModular", "ArionFreecamL
     if old then pcall(function() old:Destroy() end) end
 end
 
-local R={connections={},closed=false,renderBound=false,moveBound=false,hidden={}}
+local R={connections={},closed=false,renderBound=false,moveBound=false,hidden={},
+    deathConnection=nil,restoreOnRespawn=false}
 local S={
     active=false, speed=24, sensitivity=.005, smooth=true, smoothStrength=16,
     pos=nil, pitch=0, yaw=0, cam=nil, saved=nil, axis=Vector2.zero,
@@ -113,6 +114,25 @@ local function clampPosition(root,obj,p)
 end
 local function findPos(root,obj)
     return obj.AbsolutePosition-root.AbsolutePosition
+end
+-- El contenido de estas listas tiene alturas fijas. Calculamos el canvas
+-- tambien cuando un deslizador o el selector de jugadores cambian de visibilidad.
+local function resizeCanvas(frame,padding)
+    local height,count=12,0
+    for _,child in ipairs(frame:GetChildren()) do
+        if child.Visible and child.Size and
+            (child:IsA("Frame") or child:IsA("TextButton") or child:IsA("TextLabel")) then
+            height=height+child.Size.Y.Offset+child.Size.Y.Scale*frame.AbsoluteSize.Y
+            count=count+1
+        end
+    end
+    height=math.max(0,math.ceil(height+math.max(0,count-1)*padding))
+    frame.CanvasSize=px(0,height)
+    local position=frame.CanvasPosition
+    if position then
+        local limit=math.max(0,height-frame.AbsoluteSize.Y)
+        if position.Y>limit then frame.CanvasPosition=Vector2.new(position.X,limit) end
+    end
 end
 local function copy(t)
     if not t then return nil end
@@ -223,9 +243,10 @@ local pages={}
 for _,entry in ipairs(tabNames) do
     local page=make("ScrollingFrame",menu,{Name="Page"..entry[1],
         Size=dim(1,-18,1,-181),Position=px(9,135),BackgroundTransparency=1,
-        ScrollBarThickness=3,ScrollBarImageColor3=C.accent,BorderSizePixel=0,
-        CanvasSize=px(0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,
-        ScrollingDirection=Enum.ScrollingDirection.Y,ZIndex=50,Visible=false})
+        ScrollBarThickness=5,ScrollBarImageColor3=C.accent,BorderSizePixel=0,
+        CanvasSize=px(0,0),AutomaticCanvasSize=Enum.AutomaticSize.None,
+        ScrollingDirection=Enum.ScrollingDirection.Y,ScrollingEnabled=true,
+        ClipsDescendants=true,Active=true,ZIndex=50,Visible=false})
     make("UIListLayout",page,{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,6)})
     pages[entry[1]]=page
 end
@@ -318,7 +339,7 @@ end
 -- IV. CONTROLES DE VALOR: rail de gestos con actualizacion inmediata.
 local sliders={}
 local pointer={drag=nil,slider=nil,stick=nil,look=nil,lookAt=nil,mouseLook=false,
-    zoom=nil,lastRecoverTap=-10}
+    zoom=nil,scroll=nil,lastRecoverTap=-10}
 local refreshUI
 local function vec(i) return Vector2.new(i.Position.X,i.Position.Y) end
 local function makeSlider(page,name,order,initial,titleFormatter,onValue)
@@ -344,18 +365,38 @@ local function makeSlider(page,name,order,initial,titleFormatter,onValue)
     local function beginSlide(i)
         if pointer.slider or pointer.drag then return end
         if i.UserInputType==Input.Touch or i.UserInputType==Input.MouseButton1 then
-            pointer.slider={input=i,mouse=i.UserInputType==Input.MouseButton1,
+            local touch=i.UserInputType==Input.Touch
+            local startPoint=vec(i)
+            local activated=not touch
+            pointer.slider={input=i,mouse=not touch,
                 update=function(p)
+                    if touch and not activated then
+                        local delta=p-startPoint
+                        -- Un gesto vertical pertenece a la lista, no al FOV/slider.
+                        if math.abs(delta.Y)>8 and math.abs(delta.Y)>math.abs(delta.X) then return end
+                        if math.abs(delta.X)<6 or math.abs(delta.X)<math.abs(delta.Y)*1.15 then return end
+                        activated=true
+                    end
                     item.set((p.X-rail.AbsolutePosition.X)/math.max(1,rail.AbsoluteSize.X),true)
+                end,
+                finish=function()
+                    -- Un toque sin arrastrar sigue seleccionando el valor.
+                    local scroll=pointer.scroll
+                    if not activated and not (scroll and scroll.input==i and scroll.engaged) then
+                        item.set((startPoint.X-rail.AbsolutePosition.X)/math.max(1,rail.AbsoluteSize.X),true)
+                    end
                 end}
-            pointer.slider.update(vec(i))
+            if not touch then pointer.slider.update(startPoint) end
         end
     end
     -- En Roblox el evento del hijo (rail/knob) no siempre llega al contenedor.
     add(shell.InputBegan,beginSlide)
     add(rail.InputBegan,beginSlide)
     add(knob.InputBegan,beginSlide)
-    tap(trigger,function() shell.Visible=not shell.Visible end)
+    tap(trigger,function()
+        shell.Visible=not shell.Visible
+        resizeCanvas(page,6)
+    end)
     table.insert(sliders,item)
     return item
 end
@@ -425,8 +466,9 @@ local search=make("TextBox",picker,{Name="SearchPlayers",Text="",PlaceholderText
 rounded(search,7)
 local playerList=make("ScrollingFrame",picker,{Name="PlayerList",
     Size=dim(1,-10,1,-52),Position=px(5,49),BackgroundTransparency=1,
-    BorderSizePixel=0,ScrollBarThickness=3,CanvasSize=px(0,0),
-    AutomaticCanvasSize=Enum.AutomaticSize.Y,ZIndex=52})
+    BorderSizePixel=0,ScrollBarThickness=5,CanvasSize=px(0,0),
+    AutomaticCanvasSize=Enum.AutomaticSize.None,ScrollingEnabled=true,
+    Active=true,ClipsDescendants=true,ZIndex=52})
 make("UIListLayout",playerList,{SortOrder=Enum.SortOrder.LayoutOrder,
     Padding=UDim.new(0,3)})
 local aimButton=row(pages.PLAYERS,"AimPart","Apuntar: Torso",30)
@@ -458,11 +500,20 @@ local Camera={render="ArionFreecamV7Render",action="ArionFreecamV7Move"}
 local function resetInputs()
     pointer.stick=nil;pointer.look=nil;pointer.lookAt=nil;pointer.mouseLook=false
     pointer.slider=nil;pointer.zoom=nil
+    if pointer.scroll then
+        pointer.scroll.frame.ScrollingEnabled=true
+        pointer.scroll=nil
+    end
     S.axis=Vector2.zero;S.rise=false;S.fall=false
     S.held={};S.cineHeld={}
     stick.Position=UDim2.fromScale(.5,.5)
 end
-local function restoreCurrent()
+local function currentHumanoid(character)
+    local hum=character and character:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Parent and (hum.Health==nil or hum.Health>0) then return hum end
+    return nil
+end
+local function restoreCurrent(allowRespawn)
     local cam,old=S.cam,S.saved
     S.cam=nil;S.saved=nil
     if not cam or not old then return end
@@ -471,19 +522,29 @@ local function restoreCurrent()
         cam.CFrame=old.cframe
         cam.Focus=old.focus
         cam.FieldOfView=old.fov
-        if old.subject and old.subject.Parent then
-            cam.CameraSubject=old.subject
+        -- El Humanoid guardado puede haber muerto, aunque aun tenga Parent.
+        local hum=currentHumanoid(player.Character)
+        if hum then
+            cam.CameraSubject=hum
+            R.restoreOnRespawn=false
         else
-            local char=player.Character
-            local hum=char and char:FindFirstChildOfClass("Humanoid")
-            if hum then cam.CameraSubject=hum end
+            if old.subject and old.subject.Parent and not old.subject:IsA("Humanoid") then
+                cam.CameraSubject=old.subject
+            end
+            if allowRespawn then R.restoreOnRespawn=true end
         end
-        cam.CameraType=old.kind
+        -- Dejarla Scriptable tras detener la freecam provocaria una camara fija.
+        cam.CameraType=(old.kind==Enum.CameraType.Scriptable)
+            and Enum.CameraType.Custom or old.kind
     end)
 end
 local function attachCurrent()
     local cam=workspace.CurrentCamera
     if not cam then return false end
+    local current=player.Character
+    local hum=current and current:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health~=nil and hum.Health<=0 then return false end
+    R.restoreOnRespawn=false
     S.cam=cam
     S.saved={kind=cam.CameraType,subject=cam.CameraSubject,
         cframe=cam.CFrame,focus=cam.Focus,fov=cam.FieldOfView}
@@ -524,7 +585,7 @@ end
 local function updateCamera(dt)
     if not S.active then return end
     if workspace.CurrentCamera~=S.cam then
-        restoreCurrent()
+        restoreCurrent(false)
         if not attachCurrent() then return end
     end
     local cam=S.cam
@@ -572,8 +633,12 @@ function Camera.stop()
         R.moveBound=false
     end
     S.active=false
+    if R.deathConnection then
+        pcall(function() R.deathConnection:Disconnect() end)
+        R.deathConnection=nil
+    end
     resetInputs()
-    restoreCurrent()
+    restoreCurrent(true)
     if refreshUI then refreshUI() end
 end
 function Camera.start()
@@ -615,10 +680,47 @@ function Camera.start()
         return false
     end
     R.renderBound=true;S.active=true
+    local hum=currentHumanoid(player.Character)
+    if hum and hum.Died then
+        R.deathConnection=hum.Died:Connect(function()
+            if R.closed or not S.active then return end
+            Camera.stop()
+            R.restoreOnRespawn=currentHumanoid(player.Character)==nil
+            notice("Personaje muerto: camara liberada; se restaurara al reaparecer")
+        end)
+    end
     if refreshUI then refreshUI() end
     notice("Camara activa")
     return true
 end
+
+-- El personaje puede morir durante freecam; el sujeto antiguo no es reutilizable.
+add(player.CharacterRemoving,function(character)
+    if R.closed or not S.active then return end
+    Camera.stop()
+    R.restoreOnRespawn=(player.Character==character or currentHumanoid(player.Character)==nil)
+    notice("Personaje reemplazado: camara liberada")
+end)
+add(player.CharacterAdded,function(character)
+    if not R.restoreOnRespawn then return end
+    task.defer(function()
+        if R.closed or not R.restoreOnRespawn or S.active then return end
+        local hum=currentHumanoid(character)
+        if not hum then
+            local ok,result=pcall(function() return character:WaitForChild("Humanoid",8) end)
+            if ok and result and result.Parent and
+                (result.Health==nil or result.Health>0) then hum=result end
+        end
+        if R.closed or not R.restoreOnRespawn or S.active or player.Character~=character then return end
+        local cam=workspace.CurrentCamera
+        if not cam or not hum then return end
+        pcall(function()
+            cam.CameraSubject=hum
+            cam.CameraType=Enum.CameraType.Custom
+        end)
+        R.restoreOnRespawn=false
+    end)
+end)
 
 -- VI. GUARDADO / RESTAURACION DE INTERFACES DEL JUEGO.
 local function hideGameHUD(hidden)
@@ -675,6 +777,7 @@ local function refreshRoster(leaving)
             end))
         end
     end
+    resizeCanvas(playerList,3)
     if refreshUI then refreshUI() end
 end
 local function watchStep(direction)
@@ -699,7 +802,10 @@ local function layout()
         menu.Position=px(8,11)
     end
     -- La pagina se adapta a la altura real, sin fijar 420 px en pantallas pequenas.
-    for _,page in pairs(pages) do page.Size=dim(1,-18,0,math.max(89,height-181)) end
+    for _,page in pairs(pages) do
+        page.Size=dim(1,-18,0,math.max(89,height-181))
+        resizeCanvas(page,6)
+    end
     local function bound(obj)
         local p=obj.Position
         clampPosition(root,obj,Vector2.new(size.X*p.X.Scale+p.X.Offset,
@@ -767,9 +873,14 @@ refreshUI=function()
     quickButton.Text=S.quickEnabled and "Barra rapida: ON" or "Barra rapida: OFF"
     undoPanel.Text=S.snapshot and "DESHACER RESET" or "DESHACER (sin registro)"
     for key,page in pairs(pages) do page.Visible=(S.tab==key) end
+    if pointer.scroll and (not menu.Visible or not pointer.scroll.frame.Visible) then
+        pointer.scroll.frame.ScrollingEnabled=true
+        pointer.scroll=nil
+    end
     for key,tabButton in pairs(tabItems) do
         tabButton.BackgroundColor3=S.tab==key and C.focus or C.button
     end
+    for _,page in pairs(pages) do resizeCanvas(page,6) end
 end
 local function setMode(value)
     S.mode=math.clamp(value,1,3)
@@ -778,6 +889,10 @@ local function setMode(value)
 end
 local function openPanel(open)
     S.panelOpen=open
+    if not open and pointer.scroll then
+        pointer.scroll.frame.ScrollingEnabled=true
+        pointer.scroll=nil
+    end
     refreshUI()
 end
 local function toggleCamera()
@@ -978,8 +1093,46 @@ add(cineZoomKnob.InputBegan,function(i)
         updateZoomPoint(vec(i))
     end
 end)
+local function inside(obj,p)
+    local a,b=obj.AbsolutePosition,obj.AbsoluteSize
+    return p.X>=a.X and p.X<=a.X+b.X and p.Y>=a.Y and p.Y<=a.Y+b.Y
+end
+add(UIS.InputBegan,function(i)
+    if i.UserInputType~=Input.Touch or pointer.scroll or not menu.Visible then return end
+    local p=vec(i)
+    local frame=nil
+    if picker.Visible and pages.PLAYERS.Visible and inside(playerList,p) then
+        frame=playerList
+    else
+        for _,page in pairs(pages) do
+            if page.Visible and inside(page,p) then frame=page;break end
+        end
+    end
+    if frame then
+        pointer.scroll={input=i,frame=frame,start=p,engaged=false,fromY=0}
+    end
+end)
 add(UIS.InputChanged,function(i)
     local point=vec(i)
+    local scroll=pointer.scroll
+    if scroll and scroll.input==i then
+        local delta=point-scroll.start
+        if scroll.engaged then
+            local maxY=math.max(0,scroll.frame.CanvasSize.Y.Offset-scroll.frame.AbsoluteSize.Y)
+            scroll.frame.CanvasPosition=Vector2.new(0,
+                math.clamp(scroll.fromY-delta.Y,0,maxY))
+            return
+        elseif math.abs(delta.Y)>8 and math.abs(delta.Y)>math.abs(delta.X)*1.15 then
+            scroll.engaged=true
+            scroll.fromY=scroll.frame.CanvasPosition.Y
+            scroll.start=point
+            scroll.frame.ScrollingEnabled=false
+            if pointer.slider and pointer.slider.input==i then pointer.slider=nil end
+            return
+        elseif math.abs(delta.X)>12 and math.abs(delta.X)>math.abs(delta.Y)*1.15 then
+            pointer.scroll=nil -- gesto horizontal: deslizador, no desplazamiento vertical
+        end
+    end
     local d=pointer.drag
     if d and (d.input==i or (d.mouse and i.UserInputType==Input.MouseMovement)) then
         local delta=point-d.start
@@ -1014,7 +1167,12 @@ add(UIS.InputEnded,function(i)
     end
     local s=pointer.slider
     if s and (s.input==i or (s.mouse and i.UserInputType==Input.MouseButton1)) then
+        if s.finish then s.finish() end
         pointer.slider=nil
+    end
+    if pointer.scroll and pointer.scroll.input==i then
+        pointer.scroll.frame.ScrollingEnabled=true
+        pointer.scroll=nil
     end
     local z=pointer.zoom
     if z and (z.input==i or (z.mouse and i.UserInputType==Input.MouseButton1)) then
@@ -1103,7 +1261,10 @@ tap(quickButton,function()
     if not S.quickEnabled then S.fovOverlayOpen=false end
     refreshUI()
 end)
-tap(pick,function() picker.Visible=not picker.Visible end)
+tap(pick,function()
+    picker.Visible=not picker.Visible
+    resizeCanvas(pages.PLAYERS,6)
+end)
 tap(prevPlayer,function() watchStep(-1) end)
 tap(nextPlayer,function() watchStep(1) end)
 tap(watchPlayer,function()
