@@ -1,4 +1,4 @@
--- ARION FREECAM / v7.2.3 - scroll tactil estable por zonas, camara y FOV conservados
+-- ARION FREECAM / v7.2.4 - suavizado intuitivo y FOV flotante minimalista
 -- Cliente Roblox (Delta movil + PC). Sin grabacion, sin anclar al personaje.
 -- Interfaz de pestañas, dock rapido, control CINE independiente, luz reversible,
 -- reset/deshacer integral. F8 o doble toque esquina superior izquierda: recuperar.
@@ -195,19 +195,21 @@ local qMinimize=button(quick,"QuickFold","-",px(54,26),px(5,269),33)
 local qFov=button(root,"QuickFOV","FOV",px(60,42),dim(1,-138,0,12),36,C.focus)
 qFov.TextSize=13
 
--- Barra FOV independiente: parte inferior central, como en el ArionCam original.
-local fovOverlay=panel(root,"FOVFloating",px(320,78),dim(.5,0,1,-16),C.surface,43,12)
+-- Solo una barra visible: sin tarjeta, titulo ni boton de cierre.
+-- El boton FOV del dock es el unico interruptor; su aspecto no cambia.
+local fovOverlay=make("Frame",root,{Name="FOVFloating",Size=px(320,32),
+    Position=dim(.5,0,1,-16),BackgroundTransparency=1,BorderSizePixel=0,
+    Visible=false,Active=true,ZIndex=43})
 fovOverlay.AnchorPoint=Vector2.new(.5,1)
-fovOverlay.Visible=false;fovOverlay.Active=true
-make("UIStroke",fovOverlay,{Color=C.line,Thickness=1,Transparency=.46})
-local fovLabel=text(fovOverlay,"FOVValue","FOV BASE  /  70",dim(1,-64,0,23),px(14,7),46,13,true)
-local fovClose=button(fovOverlay,"FOVClose","X",px(34,28),dim(1,-40,0,5),47)
--- La zona tactil tiene 36 px de altura, pero el rail visible sigue siendo discreto.
-local fovTouch=make("Frame",fovOverlay,{Name="FOVTouchTarget",Size=dim(1,-30,0,36),
-    Position=px(15,34),BackgroundTransparency=1,Active=true,ZIndex=45})
-local fovRail=panel(fovTouch,"FOVTrack",dim(1,-14,0,8),px(7,14),C.line,46,4)
-local fovKnob=panel(fovRail,"FOVKnob",px(24,24),UDim2.fromScale((120-70)/90,.5),C.accent,47,12)
+-- Zona tactil transparente de 32 px: mas facil de manejar que el rail de 8 px.
+local fovTouch=make("Frame",fovOverlay,{Name="FOVTouchTarget",Size=dim(1,-16,1,0),
+    Position=px(8,0),BackgroundTransparency=1,BorderSizePixel=0,Active=true,ZIndex=45})
+local fovRail=panel(fovTouch,"FOVTrack",dim(1,-12,0,8),dim(0,6,.5,-4),C.line,46,4)
+local fovKnob=panel(fovRail,"FOVKnob",px(22,22),UDim2.fromScale((120-70)/90,.5),C.accent,47,11)
 fovKnob.AnchorPoint=Vector2.new(.5,.5)
+-- Solo el carril y su perilla llevan borde: contraste ante escenas claras.
+make("UIStroke",fovRail,{Color=C.bg,Thickness=2,Transparency=.15})
+make("UIStroke",fovKnob,{Color=C.text,Thickness=1,Transparency=.28})
 fovRail.Active=true;fovKnob.Active=true
 
 -- Control cinematografico FLOTANTE, separado del panel de configuracion.
@@ -465,9 +467,11 @@ local sensitivitySlider=makeSlider(pages.MOVE,"SensitivityControl",20,.5,
     function(v) return string.format("Sensibilidad  /  %.1f",1+8*v) end,
     function(v) S.sensitivity=.001+.008*v end)
 local smoothToggle=row(pages.MOVE,"SmoothToggle","Suavizado: ON",30)
-local smoothSlider=makeSlider(pages.MOVE,"SmoothStrength",40,(16-2)/28,
-    function(v) return string.format("Intensidad suave  /  %d",math.floor(2+28*v+.5)) end,
-    function(v) S.smoothStrength=math.floor(2+28*v+.5) end)
+-- A la derecha hay MAS suavizado: la tasa de seguimiento interna es inversa.
+-- Conservamos la fisica original (2..30) para no alterar el comportamiento.
+local smoothSlider=makeSlider(pages.MOVE,"SmoothStrength",40,(30-16)/28,
+    function(v) return string.format("Intensidad suave  /  %d%%",math.floor(100*v+.5)) end,
+    function(v) S.smoothStrength=math.floor(30-28*v+.5) end)
 -- FOV invertido: izquierda = campo amplio (aleja), derecha = campo cerrado (acerca).
 local fovSlider=makeSlider(pages.MOVE,"FieldOfView",50,(120-70)/90,
     function(v) return string.format("FOV base  /  %d",math.floor(120-90*v+.5)) end,
@@ -862,7 +866,7 @@ local function layout()
     end
     -- En portrait, el control FOV se eleva por encima del pad de movimiento.
     local portrait=size.X<520 and size.Y>size.X
-    fovOverlay.Size=px(math.clamp(size.X-280,150,340),78)
+    fovOverlay.Size=px(math.clamp(size.X-280,150,340),32)
     fovOverlay.Position=dim(.5,0,1,portrait and -145 or -16)
     bound(launcher);bound(menu);bound(quick);bound(cine)
 end
@@ -896,7 +900,6 @@ refreshUI=function()
     fadeTree(qFov,S.quickOpacity)
     fadeTree(fovOverlay,S.quickOpacity)
     fadeTree(cine,S.cineOpacity)
-    fovLabel.Text=string.format("FOV BASE  /  %d",S.baseFov)
     fovKnob.Position=UDim2.fromScale(fovSlider.value,.5)
     qFov.BackgroundColor3=S.fovOverlayOpen and C.on or C.focus
     local enabled=S.active
@@ -1288,7 +1291,6 @@ tap(qCinema,toggleCinema)
 tap(cinemaToggle,toggleCinema)
 tap(qSmooth,function() S.smooth=not S.smooth;refreshUI() end)
 tap(qFov,function() S.fovOverlayOpen=not S.fovOverlayOpen;refreshUI() end)
-tap(fovClose,function() S.fovOverlayOpen=false;refreshUI() end)
 tap(smoothToggle,function() S.smooth=not S.smooth;refreshUI() end)
 tap(qReset,resetAll)
 tap(qUndo,undoReset)
