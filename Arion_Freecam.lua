@@ -415,4 +415,742 @@ local prevPlayer=button(watchNav,"PreviousPlayer","<",px(43,39),px(2,1),52)
 local watchPlayer=button(watchNav,"WatchPlayer","Ver jugador",dim(1,-98,0,39),px(49,1),52)
 local nextPlayer=button(watchNav,"NextPlayer",">",px(43,39),dim(1,-45,0,1),52)
 local pick=row(pages.PLAYERS,"ChoosePlayer","Seleccionar jugador",20)
-local picker=panel(pages.PLAYERS,"PlayerPicker",dim(1,
+local picker=panel(pages.PLAYERS,"PlayerPicker",dim(1,-5,0,174),px(0,0),C.surface,51,8)
+picker.LayoutOrder=21;picker.Visible=false
+local search=make("TextBox",picker,{Name="SearchPlayers",Text="",PlaceholderText="Buscar usuario...",
+    ClearTextOnFocus=false,Size=dim(1,-10,0,39),Position=px(5,5),
+    BackgroundColor3=C.elevated,TextColor3=C.text,PlaceholderColor3=C.muted,
+    Font=Enum.Font.Gotham,TextSize=12,ZIndex=53})
+rounded(search,7)
+local playerList=make("ScrollingFrame",picker,{Name="PlayerList",
+    Size=dim(1,-10,1,-52),Position=px(5,49),BackgroundTransparency=1,
+    BorderSizePixel=0,ScrollBarThickness=3,CanvasSize=px(0,0),
+    AutomaticCanvasSize=Enum.AutomaticSize.Y,ZIndex=52})
+make("UIListLayout",playerList,{SortOrder=Enum.SortOrder.LayoutOrder,
+    Padding=UDim.new(0,3)})
+local aimButton=row(pages.PLAYERS,"AimPart","Apuntar: Torso",30)
+local lockButton=row(pages.PLAYERS,"LockPlayer","Activar lock",40)
+local clearWatch=row(pages.PLAYERS,"StopWatching","Dejar de seguir jugador",50)
+
+section(pages.UI,"INTERFAZ Y ACCESO RAPIDO",1)
+local modeButton=row(pages.UI,"VisualMode","Interfaz: Completa",10)
+local hudButton=row(pages.UI,"HideOtherGUI","Ocultar interfaces del juego",20)
+local quickButton=row(pages.UI,"QuickEnabled","Barra rapida: ON",30)
+local controlOpacitySlider=makeSlider(pages.UI,"ControlOpacity",40,.68,
+    function(v) return string.format("Opacidad tactil  /  %d%%",math.floor(v*100+.5)) end,
+    function(v) S.controlsOpacity=v end)
+local quickOpacitySlider=makeSlider(pages.UI,"QuickOpacity",50,.9,
+    function(v) return string.format("Opacidad barra rapida  /  %d%%",math.floor(v*100+.5)) end,
+    function(v) S.quickOpacity=v end)
+local cineOpacitySlider=makeSlider(pages.UI,"CineOpacity",60,.88,
+    function(v) return string.format("Opacidad panel CINE  /  %d%%",math.floor(v*100+.5)) end,
+    function(v) S.cineOpacity=v end)
+local guiHint=text(pages.UI,"GuiHint",
+    "Arrastra AR, cabecera, MOVER y CINE. F8 o doble toque en esquina izquierda para recuperar modo invisible.",
+    dim(1,-8,0,58),px(0,0),51,11)
+guiHint.TextWrapped=true;guiHint.LayoutOrder=70;guiHint.TextColor3=C.muted
+local recover=button(root,"RecoverUI","",px(76,76),px(0,0),65)
+recover.Visible=false;recover.TextTransparency=1;recover.BackgroundTransparency=1
+
+-- V. MOTOR DE CAMARA (ejecuta solo si esta encendido).
+local Camera={render="ArionFreecamV7Render",action="ArionFreecamV7Move"}
+local function resetInputs()
+    pointer.stick=nil;pointer.look=nil;pointer.lookAt=nil;pointer.mouseLook=false
+    pointer.slider=nil;pointer.zoom=nil
+    S.axis=Vector2.zero;S.rise=false;S.fall=false
+    S.held={};S.cineHeld={}
+    stick.Position=UDim2.fromScale(.5,.5)
+end
+local function restoreCurrent()
+    local cam,old=S.cam,S.saved
+    S.cam=nil;S.saved=nil
+    if not cam or not old then return end
+    pcall(function()
+        if not cam.Parent then return end
+        cam.CFrame=old.cframe
+        cam.Focus=old.focus
+        cam.FieldOfView=old.fov
+        if old.subject and old.subject.Parent then
+            cam.CameraSubject=old.subject
+        else
+            local char=player.Character
+            local hum=char and char:FindFirstChildOfClass("Humanoid")
+            if hum then cam.CameraSubject=hum end
+        end
+        cam.CameraType=old.kind
+    end)
+end
+local function attachCurrent()
+    local cam=workspace.CurrentCamera
+    if not cam then return false end
+    S.cam=cam
+    S.saved={kind=cam.CameraType,subject=cam.CameraSubject,
+        cframe=cam.CFrame,focus=cam.Focus,fov=cam.FieldOfView}
+    S.pos=cam.CFrame.Position
+    S.pitch,S.yaw=cam.CFrame:ToOrientation()
+    cam.CameraType=Enum.CameraType.Scriptable
+    return true
+end
+local function torso(p)
+    local char=p and p.Character
+    if not char then return nil end
+    local obj=char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+        or char:FindFirstChild("HumanoidRootPart")
+    return obj and obj.Position or nil
+end
+local function targetPosition(p)
+    local char=p and p.Character
+    if not char then return nil end
+    if S.aim==2 then
+        local head=char:FindFirstChild("Head")
+        if head then return head.Position end
+    elseif S.aim==3 then
+        local lower=char:FindFirstChild("LowerTorso")
+        if lower then return lower.Position end
+        local classic=char:FindFirstChild("Torso")
+        if classic then
+            return classic.CFrame:PointToWorldSpace(Vector3.new(0,-classic.Size.Y*.3,0))
+        end
+    end
+    return torso(p)
+end
+local function key(name)
+    return S.held[name] and 1 or 0
+end
+local function cineKey(name)
+    return S.cineHeld[name] and 1 or 0
+end
+local function updateCamera(dt)
+    if not S.active then return end
+    if workspace.CurrentCamera~=S.cam then
+        restoreCurrent()
+        if not attachCurrent() then return end
+    end
+    local cam=S.cam
+    if not cam then return end
+    if cam.CameraType~=Enum.CameraType.Scriptable then cam.CameraType=Enum.CameraType.Scriptable end
+    local rotation=CFrame.fromOrientation(S.pitch,S.yaw,0)
+    local cineX=cineKey("right")-cineKey("left")
+    local cineY=cineKey("up")-cineKey("down")
+    local cineZ=cineKey("back")-cineKey("forward")
+    local dir=Vector3.new(
+        S.axis.X+key("D")-key("A")+cineX,
+        (S.rise and 1 or 0)-(S.fall and 1 or 0)+key("E")-key("Q")+cineY,
+        S.axis.Y+key("S")-key("W")+cineZ
+    )
+    if dir.Magnitude>1 then dir=dir.Unit end
+    local dtCap=math.min(math.max(dt,0),.075)
+    local motion=rotation:VectorToWorldSpace(dir)*S.speed*dtCap
+    local watchPos=torso(S.watch)
+    if watchPos then
+        S.offset=S.offset+motion
+        S.pos=watchPos+S.offset
+    else
+        if S.watch then S.watch=nil end
+        S.pos=S.pos+motion
+    end
+    local aim=S.locked and targetPosition(S.target) or watchPos
+    if S.locked and not aim then S.locked=false end
+    local goal=CFrame.new(S.pos)*rotation
+    if aim and (aim-S.pos).Magnitude>.01 then
+        goal=CFrame.lookAt(S.pos,aim)
+        S.pitch,S.yaw=goal:ToOrientation()
+    end
+    local blend=S.smooth and (1-math.exp(-S.smoothStrength*dtCap)) or 1
+    cam.CFrame=blend>=1 and goal or cam.CFrame:Lerp(goal,blend)
+    cam.Focus=CFrame.new(aim or (cam.CFrame.Position+cam.CFrame.LookVector*18))
+    cam.FieldOfView=math.clamp(S.baseFov*(S.zoom and S.zoomFactor or 1),5,120)
+end
+function Camera.stop()
+    if R.renderBound then
+        pcall(function() Run:UnbindFromRenderStep(Camera.render) end)
+        R.renderBound=false
+    end
+    if R.moveBound then
+        pcall(function() CAS:UnbindAction(Camera.action) end)
+        R.moveBound=false
+    end
+    S.active=false
+    resetInputs()
+    restoreCurrent()
+    if refreshUI then refreshUI() end
+end
+function Camera.start()
+    if S.active then return true end
+    local ok,attached=pcall(attachCurrent)
+    if not ok or not attached then
+        notice("Camara no disponible")
+        Camera.stop()
+        return false
+    end
+    local actionOK,actionError=pcall(function()
+        CAS:BindActionAtPriority(Camera.action,function(_,state,input)
+            if UIS:GetFocusedTextBox() then return Enum.ContextActionResult.Pass end
+            local k=input.KeyCode.Name
+            if k=="W" or k=="A" or k=="S" or k=="D" or k=="Q" or k=="E" then
+                S.held[k]=(state==Enum.UserInputState.Begin or state==Enum.UserInputState.Change)
+            end
+            return Enum.ContextActionResult.Sink
+        end,false,3100,Keys.W,Keys.A,Keys.S,Keys.D,Keys.Q,Keys.E,
+        Enum.PlayerActions.CharacterForward,Enum.PlayerActions.CharacterBackward,
+        Enum.PlayerActions.CharacterLeft,Enum.PlayerActions.CharacterRight,
+        Enum.PlayerActions.CharacterJump)
+    end)
+    R.moveBound=actionOK
+    if not actionOK then warn("[Arion v7] Accion PC no vinculada: "..tostring(actionError)) end
+    local runOK,runErr=pcall(function()
+        Run:BindToRenderStep(Camera.render,Enum.RenderPriority.Camera.Value+1,function(dt)
+            local good,errorMessage=pcall(updateCamera,dt)
+            if not good then
+                warn("[Arion v7] Motor de camara: "..tostring(errorMessage))
+                Camera.stop()
+                notice("Camara detenida: error de motor")
+            end
+        end)
+    end)
+    if not runOK then
+        notice("No se pudo iniciar: "..tostring(runErr))
+        Camera.stop()
+        return false
+    end
+    R.renderBound=true;S.active=true
+    if refreshUI then refreshUI() end
+    notice("Camara activa")
+    return true
+end
+
+-- VI. GUARDADO / RESTAURACION DE INTERFACES DEL JUEGO.
+local function hideGameHUD(hidden)
+    if hidden then
+        for _,element in ipairs(pg:GetChildren()) do
+            if element:IsA("ScreenGui") and element~=gui and R.hidden[element]==nil then
+                R.hidden[element]=element.Enabled
+                element.Enabled=false
+            end
+        end
+    else
+        for element,value in pairs(R.hidden) do
+            pcall(function() if element.Parent then element.Enabled=value end end)
+        end
+        R.hidden={}
+    end
+    S.otherHUD=hidden
+    if refreshUI then refreshUI() end
+end
+add(pg.ChildAdded,function(element)
+    if S.otherHUD and element:IsA("ScreenGui") and element~=gui and R.hidden[element]==nil then
+        R.hidden[element]=element.Enabled
+        element.Enabled=false
+    end
+end)
+
+local roster={}
+local function refreshRoster(leaving)
+    roster={}
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p~=player and p~=leaving then table.insert(roster,p) end
+    end
+    table.sort(roster,function(a,b) return a.Name:lower()<b.Name:lower() end)
+    if S.target and not table.find(roster,S.target) then S.target=nil;S.locked=false end
+    if S.watch and not table.find(roster,S.watch) then S.watch=nil end
+    pick.Text=S.target and ("Objetivo: @"..S.target.Name) or "Seleccionar jugador"
+    for _,child in ipairs(playerList:GetChildren()) do
+        if child:IsA("TextButton") then child:Destroy() end
+    end
+    local needle=search.Text:lower()
+    local visible=0
+    for _,p in ipairs(roster) do
+        if p.Name:lower():find(needle,1,true) then
+            visible=visible+1
+            local entry=button(playerList,"Player"..visible,"@"..p.Name,
+                dim(1,-4,0,35),px(0,0),53)
+            entry.LayoutOrder=visible
+            -- Eventos de elementos dinamicos: al destruir el TextButton, se liberan.
+            entry.Activated:Connect(safe(function()
+                S.target=p
+                pick.Text="Objetivo: @"..p.Name
+                picker.Visible=false
+                if refreshUI then refreshUI() end
+            end))
+        end
+    end
+    if refreshUI then refreshUI() end
+end
+local function watchStep(direction)
+    if #roster==0 then notice("No hay jugadores para observar");return end
+    if not S.active and not Camera.start() then return end
+    local index=table.find(roster,S.watch) or (direction>0 and 0 or 1)
+    S.watch=roster[(index-1+direction)%#roster+1]
+    S.offset=Vector3.new(0,3,12)
+    if refreshUI then refreshUI() end
+end
+
+local resetPanel=row(pages.UI,"ResetAll","RESET GENERAL",80)
+local undoPanel=row(pages.UI,"UndoAll","DESHACER RESET",90)
+S.quickFolded=false
+local function layout()
+    local size=rootSize(root)
+    local width=math.min(310,math.max(195,size.X-83))
+    local height=math.min(468,math.max(268,size.Y-20))
+    menu.Size=px(width,height)
+    -- En pantallas estrechas deja el dock rapido libre en el borde derecho.
+    if size.X<650 and menu.Position.X.Scale==0 and menu.Position.X.Offset==69 then
+        menu.Position=px(8,11)
+    end
+    -- La pagina se adapta a la altura real, sin fijar 420 px en pantallas pequenas.
+    for _,page in pairs(pages) do page.Size=dim(1,-18,0,math.max(89,height-181)) end
+    local function bound(obj)
+        local p=obj.Position
+        clampPosition(root,obj,Vector2.new(size.X*p.X.Scale+p.X.Offset,
+            size.Y*p.Y.Scale+p.Y.Offset))
+    end
+    -- En portrait, el control FOV se eleva por encima del pad de movimiento.
+    local portrait=size.X<520 and size.Y>size.X
+    fovOverlay.Size=px(math.clamp(size.X-280,150,340),78)
+    fovOverlay.Position=dim(.5,0,1,portrait and -145 or -16)
+    bound(launcher);bound(menu);bound(quick);bound(cine)
+end
+local function modeName()
+    return ({"Completa","Minima","Invisible"})[S.mode]
+end
+refreshUI=function()
+    if R.closed then return end
+    local invisible=S.mode==3
+    local minimal=S.mode==2
+    launcher.Visible=not invisible
+    menu.Visible=S.panelOpen and not invisible
+    quick.Visible=not invisible and S.quickEnabled
+    -- FOV permanece al borde y no tapa los botones de cierre del panel en movil.
+    qFov.Visible=not invisible and S.quickEnabled and (not S.panelOpen or rootSize(root).X>=620)
+    fovOverlay.Visible=not invisible and S.quickEnabled and S.fovOverlayOpen
+    quick.Size=px(64,S.quickFolded and 113 or 303)
+    for _,b in ipairs({qCinema,qSmooth,qReset,qUndo}) do b.Visible=not S.quickFolded end
+    qMinimize.Position=px(5,S.quickFolded and 80 or 269)
+    qMinimize.Text=S.quickFolded and "+" or "-"
+    recover.Visible=invisible
+    local small=rootSize(root).X<620
+    cine.Visible=S.active and S.zoom and S.cinePanelOpen and not invisible and (not S.panelOpen or not small)
+    look.Visible=S.active
+    local touch=S.active and UIS.TouchEnabled
+    pad.Visible=touch;up.Visible=touch;down.Visible=touch
+    fadeTree(pad,invisible and 0 or (minimal and math.min(S.controlsOpacity,.30) or S.controlsOpacity))
+    fadeTree(up,invisible and 0 or (minimal and math.min(S.controlsOpacity,.30) or S.controlsOpacity))
+    fadeTree(down,invisible and 0 or (minimal and math.min(S.controlsOpacity,.30) or S.controlsOpacity))
+    fadeTree(quick,S.quickOpacity)
+    fadeTree(qFov,S.quickOpacity)
+    fadeTree(fovOverlay,S.quickOpacity)
+    fadeTree(cine,S.cineOpacity)
+    fovLabel.Text=string.format("FOV BASE  /  %d",S.baseFov)
+    fovKnob.Position=UDim2.fromScale(fovSlider.value,.5)
+    qFov.BackgroundColor3=S.fovOverlayOpen and C.on or C.focus
+    local enabled=S.active
+    qPower.Text=enabled and "CAM ON" or "CAM OFF"
+    qPower.BackgroundColor3=enabled and C.on or C.off
+    menuPower.Text=enabled and "CAMARA ACTIVADA" or "CAMARA APAGADA"
+    menuPower.BackgroundColor3=enabled and C.on or C.off
+    qCinema.Text=S.zoom and "CINE ON" or "CINE"
+    qCinema.BackgroundColor3=S.zoom and C.on or C.button
+    qSmooth.Text=S.smooth and "SUAVE" or "SECO"
+    qSmooth.BackgroundColor3=S.smooth and C.focus or C.button
+    qUndo.Text=S.snapshot and "UNDO" or "SIN UNDO"
+    qUndo.TextSize=S.snapshot and 11 or 9
+    qUndo.BackgroundColor3=S.snapshot and C.focus or C.elevated
+    cinemaToggle.Text=S.zoom and "Cine: ON  /  desactivar" or "Cine: OFF  /  activar"
+    cinemaShow.Text=S.cinePanelOpen and "Panel flotante: VISIBLE" or "Panel flotante: OCULTO"
+    smoothToggle.Text=S.smooth and "Suavizado: ON" or "Suavizado: OFF"
+    watchPlayer.Text=S.watch and ("@"..S.watch.Name) or "Ver jugador"
+    lockButton.Text=S.locked and "Desactivar Lock Jugador" or "Activar Lock Jugador"
+    aimButton.Text=({"Apuntar: Torso","Apuntar: Cabeza","Apuntar: Torso bajo"})[S.aim]
+    hudButton.Text=S.otherHUD and "Mostrar interfaces del juego" or "Ocultar interfaces del juego"
+    modeButton.Text="Interfaz: "..modeName()
+    quickButton.Text=S.quickEnabled and "Barra rapida: ON" or "Barra rapida: OFF"
+    undoPanel.Text=S.snapshot and "DESHACER RESET" or "DESHACER (sin registro)"
+    for key,page in pairs(pages) do page.Visible=(S.tab==key) end
+    for key,tabButton in pairs(tabItems) do
+        tabButton.BackgroundColor3=S.tab==key and C.focus or C.button
+    end
+end
+local function setMode(value)
+    S.mode=math.clamp(value,1,3)
+    if S.mode~=1 then S.panelOpen=false end
+    refreshUI()
+end
+local function openPanel(open)
+    S.panelOpen=open
+    refreshUI()
+end
+local function toggleCamera()
+    if S.active then Camera.stop() else Camera.start() end
+end
+local function toggleCinema()
+    if not S.active or not S.zoom then
+        if not S.active and not Camera.start() then return end
+        S.zoom=true;S.cinePanelOpen=true
+        if rootSize(root).X<620 then S.panelOpen=false end
+        notice("Cine activado. Arrastra CINE para mover el control")
+    else
+        S.zoom=false;S.cineHeld={}
+        notice("Cine desactivado")
+    end
+    refreshUI()
+end
+
+-- VII. RESET INTEGRAL: captura antes de detener y deshacer simetrico.
+local snapFields={"speed","sensitivity","smooth","smoothStrength","baseFov",
+    "controlsOpacity","quickOpacity","cineOpacity","light","darkness",
+    "aim","locked","target","watch","offset","zoom","zoomValue",
+    "mode","tab","quickEnabled","quickFolded","cinePanelOpen",
+    "otherHUD","active","pos","pitch","yaw"}
+local function captureSnapshot()
+    local shot={sliderValues={},sliderOpen={},pickerOpen=picker.Visible,
+        searchText=search.Text,lightBase=copy(S.lightBase),
+        positions={launcher=launcher.Position,menu=menu.Position,
+            quick=quick.Position,cine=cine.Position}}
+    for _,field in ipairs(snapFields) do shot[field]=S[field] end
+    for _,item in ipairs(sliders) do
+        shot.sliderValues[item.name]=item.value
+        shot.sliderOpen[item.name]=item.shell.Visible
+    end
+    return shot
+end
+local function clearSliders()
+    for _,item in ipairs(sliders) do
+        item.set(item.initial,false)
+        item.shell.Visible=false
+    end
+end
+local function resetAll()
+    if R.closed then return end
+    S.snapshot=captureSnapshot()
+    Camera.stop()
+    hideGameHUD(false)
+    restoreLighting()
+    S.speed=24;S.sensitivity=.005;S.smooth=true;S.smoothStrength=16
+    S.baseFov=70;S.light=0;S.darkness=0
+    S.controlsOpacity=.68;S.quickOpacity=.9;S.cineOpacity=.88
+    S.aim=1;S.locked=false;S.target=nil;S.watch=nil
+    S.offset=Vector3.new(0,3,12);S.zoom=false;setZoom(.5)
+    -- RESET cambia ajustes, no debe desplegar el panel si estaba cerrado.
+    S.mode=1;S.tab="MOVE";S.quickEnabled=true
+    S.quickFolded=false;S.cinePanelOpen=true;picker.Visible=false
+    search.Text=""
+    clearSliders()
+    launcher.Position=px(12,13)
+    menu.Position=px(69,11)
+    quick.Position=dim(1,-72,0,12)
+    cine.Position=dim(1,-276,0,60)
+    layout();refreshRoster();refreshUI()
+    notice("Reset completo. UNDO restaura la sesion anterior")
+end
+local function undoReset()
+    local shot=S.snapshot
+    if not shot then notice("No hay un reset para deshacer");return end
+    Camera.stop()
+    hideGameHUD(false)
+    restoreLighting()
+    for _,field in ipairs(snapFields) do S[field]=shot[field] end
+    S.active=false -- Camera.start debe capturar otra vez la camara actual.
+    for _,item in ipairs(sliders) do
+        local v=shot.sliderValues[item.name]
+        item.set(v~=nil and v or item.initial,false)
+        item.shell.Visible=shot.sliderOpen[item.name] or false
+    end
+    search.Text=shot.searchText
+    picker.Visible=shot.pickerOpen
+    S.lightBase=copy(shot.lightBase)
+    if S.light~=0 or S.darkness~=0 then
+        applyLighting()
+    else
+        restoreLighting()
+    end
+    setZoom(shot.zoomValue)
+    launcher.Position=shot.positions.launcher
+    menu.Position=shot.positions.menu
+    quick.Position=shot.positions.quick
+    cine.Position=shot.positions.cine
+    layout()
+    refreshRoster()
+    if shot.active and Camera.start() then
+        S.pos=shot.pos or S.pos
+        S.pitch=shot.pitch;S.yaw=shot.yaw
+    end
+    if shot.otherHUD then hideGameHUD(true) end
+    S.snapshot=nil
+    refreshUI()
+    notice("Reset deshecho; ajustes recuperados")
+end
+
+-- VIII. GESTOS POR PUNTERO: arrastre real de paneles, no .Draggable.
+local function startDrag(handle,target,callback)
+    handle.Active=true
+    add(handle.InputBegan,function(i)
+        if pointer.drag or pointer.slider then return end
+        if i.UserInputType~=Input.Touch and i.UserInputType~=Input.MouseButton1 then return end
+        pointer.drag={input=i,mouse=i.UserInputType==Input.MouseButton1,
+            start=vec(i),origin=findPos(root,target),target=target,
+            onTap=callback,moved=false}
+    end)
+end
+local function updatePad(point)
+    local origin=pad.AbsolutePosition+pad.AbsoluteSize/2
+    local d=(point-origin)/40
+    S.axis=d.Magnitude>1 and d.Unit or d
+    stick.Position=dim(.5,S.axis.X*34,.5,S.axis.Y*34)
+end
+local function updateZoomPoint(point)
+    local v=(point.X-cineZoomRail.AbsolutePosition.X)/math.max(1,cineZoomRail.AbsoluteSize.X)
+    setZoom(v)
+end
+local touchVertical={rise=nil,fall=nil}
+local function holdVertical(obj,name)
+    add(obj.InputBegan,function(i)
+        if i.UserInputType==Input.Touch or i.UserInputType==Input.MouseButton1 then
+            S[name]=true
+            touchVertical[name]=i
+        end
+    end)
+    add(obj.InputEnded,function(i)
+        if i==touchVertical[name] or i.UserInputType==Input.MouseButton1 then
+            S[name]=false;touchVertical[name]=nil
+        end
+    end)
+end
+holdVertical(up,"rise")
+holdVertical(down,"fall")
+local holdCine={}
+local function cinePress(obj,name)
+    add(obj.InputBegan,function(i)
+        if i.UserInputType==Input.Touch or i.UserInputType==Input.MouseButton1 then
+            if S.active and S.zoom then
+                S.cineHeld[name]=true
+                holdCine[name]=i
+            end
+        end
+    end)
+    add(obj.InputEnded,function(i)
+        if i==holdCine[name] or i.UserInputType==Input.MouseButton1 then
+            S.cineHeld[name]=nil;holdCine[name]=nil
+        end
+    end)
+end
+for _,entry in ipairs({{cineUp,"up"},{cineDown,"down"},
+    {cineLeft,"left"},{cineRight,"right"},
+    {cineForward,"forward"},{cineBack,"back"}}) do
+    cinePress(entry[1],entry[2])
+end
+local function beginStick(i)
+    if i.UserInputType==Input.Touch and not pointer.stick and S.active then
+        pointer.stick=i;updatePad(vec(i))
+    end
+end
+add(pad.InputBegan,beginStick)
+add(stick.InputBegan,beginStick)
+add(look.InputBegan,function(i)
+    if i.UserInputType==Input.Touch and not pointer.look and not pointer.drag
+        and not pointer.slider and S.active then
+        pointer.look=i;pointer.lookAt=vec(i)
+    end
+end)
+-- El deslizador externo y el interno usan el MISMO fovSlider.
+local function beginFloatingFov(i)
+    if pointer.slider or pointer.drag or pointer.zoom then return end
+    if i.UserInputType~=Input.Touch and i.UserInputType~=Input.MouseButton1 then return end
+    pointer.slider={input=i,mouse=i.UserInputType==Input.MouseButton1,
+        update=function(point)
+            local v=(point.X-fovRail.AbsolutePosition.X)/math.max(1,fovRail.AbsoluteSize.X)
+            fovSlider.set(v,true)
+        end}
+    pointer.slider.update(vec(i))
+end
+for _,target in ipairs({fovTouch,fovRail,fovKnob}) do
+    add(target.InputBegan,beginFloatingFov)
+end
+add(cineZoomRail.InputBegan,function(i)
+    if i.UserInputType==Input.Touch or i.UserInputType==Input.MouseButton1 then
+        pointer.zoom={input=i,mouse=i.UserInputType==Input.MouseButton1}
+        updateZoomPoint(vec(i))
+    end
+end)
+add(cineZoomKnob.InputBegan,function(i)
+    if i.UserInputType==Input.Touch or i.UserInputType==Input.MouseButton1 then
+        pointer.zoom={input=i,mouse=i.UserInputType==Input.MouseButton1}
+        updateZoomPoint(vec(i))
+    end
+end)
+add(UIS.InputChanged,function(i)
+    local point=vec(i)
+    local d=pointer.drag
+    if d and (d.input==i or (d.mouse and i.UserInputType==Input.MouseMovement)) then
+        local delta=point-d.start
+        if delta.Magnitude>7 then d.moved=true end
+        if d.moved then clampPosition(root,d.target,d.origin+delta) end
+        return
+    end
+    local s=pointer.slider
+    if s and (s.input==i or (s.mouse and i.UserInputType==Input.MouseMovement)) then
+        s.update(point);return
+    end
+    local z=pointer.zoom
+    if z and (z.input==i or (z.mouse and i.UserInputType==Input.MouseMovement)) then
+        updateZoomPoint(point);return
+    end
+    if pointer.stick==i then updatePad(point);return end
+    if pointer.look==i and S.active then
+        local delta=point-pointer.lookAt
+        pointer.lookAt=point
+        S.yaw=S.yaw-delta.X*S.sensitivity
+        S.pitch=math.clamp(S.pitch-delta.Y*S.sensitivity,-1.54,1.54)
+    elseif pointer.mouseLook and S.active and i.UserInputType==Input.MouseMovement then
+        S.yaw=S.yaw-i.Delta.X*S.sensitivity
+        S.pitch=math.clamp(S.pitch-i.Delta.Y*S.sensitivity,-1.54,1.54)
+    end
+end)
+add(UIS.InputEnded,function(i)
+    local d=pointer.drag
+    if d and (d.input==i or (d.mouse and i.UserInputType==Input.MouseButton1)) then
+        pointer.drag=nil
+        if not d.moved and d.onTap then safe(d.onTap)() end
+    end
+    local s=pointer.slider
+    if s and (s.input==i or (s.mouse and i.UserInputType==Input.MouseButton1)) then
+        pointer.slider=nil
+    end
+    local z=pointer.zoom
+    if z and (z.input==i or (z.mouse and i.UserInputType==Input.MouseButton1)) then
+        pointer.zoom=nil
+    end
+    if pointer.stick==i then
+        pointer.stick=nil;S.axis=Vector2.zero;stick.Position=UDim2.fromScale(.5,.5)
+    end
+    if pointer.look==i then pointer.look=nil;pointer.lookAt=nil end
+    for _,name in ipairs({"rise","fall"}) do
+        if i==touchVertical[name] or (i.UserInputType==Input.MouseButton1 and touchVertical[name]) then
+            S[name]=false;touchVertical[name]=nil
+        end
+    end
+    for name,heldInput in pairs(holdCine) do
+        if i==heldInput or (i.UserInputType==Input.MouseButton1 and heldInput.UserInputType==Input.MouseButton1) then
+            S.cineHeld[name]=nil;holdCine[name]=nil
+        end
+    end
+    if i.UserInputType==Input.MouseButton2 then pointer.mouseLook=false end
+    if i.UserInputType==Input.Keyboard then S.held[i.KeyCode.Name]=nil end
+end)
+add(UIS.InputBegan,function(i,processed)
+    if i.KeyCode==Keys.F8 and not UIS:GetFocusedTextBox() then
+        if S.mode==3 then S.mode=1;S.panelOpen=true;refreshUI()
+        else setMode(3) end
+        return
+    end
+    if not S.active or UIS:GetFocusedTextBox() then return end
+    if i.UserInputType==Input.MouseButton2 then pointer.mouseLook=true end
+    if i.UserInputType==Input.Keyboard and not processed then
+        local keyName=i.KeyCode.Name
+        if keyName=="W" or keyName=="A" or keyName=="S" or keyName=="D"
+            or keyName=="Q" or keyName=="E" then S.held[keyName]=true end
+    end
+end)
+add(UIS.WindowFocusReleased,function()
+    resetInputs()
+    touchVertical.rise=nil;touchVertical.fall=nil;holdCine={}
+end)
+add(root:GetPropertyChangedSignal("AbsoluteSize"),function()
+    pointer.drag=nil;pointer.slider=nil;pointer.zoom=nil
+    layout();refreshUI()
+end)
+
+-- IX. ENLACES DE LA INTERFAZ Y SUS ACCESOS RAPIDOS.
+startDrag(launcher,launcher,function() openPanel(not S.panelOpen) end)
+startDrag(header,menu,nil)
+startDrag(qHandle,quick,nil)
+startDrag(cineHandle,cine,nil)
+tap(mini,function() openPanel(false) end)
+tap(close,function() if registry.__ArionFreecamV7Stop then registry.__ArionFreecamV7Stop() end end)
+tap(menuPower,toggleCamera)
+tap(qPower,toggleCamera)
+tap(qCinema,toggleCinema)
+tap(cinemaToggle,toggleCinema)
+tap(qSmooth,function() S.smooth=not S.smooth;refreshUI() end)
+tap(qFov,function() S.fovOverlayOpen=not S.fovOverlayOpen;refreshUI() end)
+tap(fovClose,function() S.fovOverlayOpen=false;refreshUI() end)
+tap(smoothToggle,function() S.smooth=not S.smooth;refreshUI() end)
+tap(qReset,resetAll)
+tap(qUndo,undoReset)
+tap(resetPanel,resetAll)
+tap(undoPanel,undoReset)
+tap(qMinimize,function() S.quickFolded=not S.quickFolded;refreshUI();layout() end)
+tap(cinemaShow,function() S.cinePanelOpen=not S.cinePanelOpen;refreshUI() end)
+tap(cineClose,function() S.cinePanelOpen=false;refreshUI() end)
+tap(cineZoomMinus,function() setZoom(S.zoomValue-.075) end)
+tap(cineZoomPlus,function() setZoom(S.zoomValue+.075) end)
+tap(zoomReset,function() setZoom(.5);refreshUI() end)
+for key,tabButton in pairs(tabItems) do
+    local selected=key
+    tap(tabButton,function() S.tab=selected;refreshUI() end)
+end
+tap(lightReset,function()
+    S.light=0;S.darkness=0
+    brightnessSlider.set(.5,false)
+    darknessSlider.set(0,false)
+    restoreLighting()
+    refreshUI();notice("Iluminacion original restaurada")
+end)
+tap(modeButton,function() setMode(S.mode%3+1) end)
+tap(hudButton,function() hideGameHUD(not S.otherHUD) end)
+tap(quickButton,function()
+    S.quickEnabled=not S.quickEnabled
+    if not S.quickEnabled then S.fovOverlayOpen=false end
+    refreshUI()
+end)
+tap(pick,function() picker.Visible=not picker.Visible end)
+tap(prevPlayer,function() watchStep(-1) end)
+tap(nextPlayer,function() watchStep(1) end)
+tap(watchPlayer,function()
+    if S.watch then S.watch=nil;refreshUI() else watchStep(1) end
+end)
+tap(clearWatch,function() S.watch=nil;refreshUI() end)
+tap(aimButton,function() S.aim=S.aim%3+1;refreshUI() end)
+tap(lockButton,function()
+    if not S.target then picker.Visible=true;notice("Selecciona un jugador");return end
+    if not S.active and not Camera.start() then return end
+    S.locked=not S.locked
+    refreshUI()
+end)
+tap(recover,function()
+    local now=os.clock()
+    if now-pointer.lastRecoverTap<.7 then
+        pointer.lastRecoverTap=-10
+        S.mode=1;S.panelOpen=true
+        refreshUI()
+    else
+        pointer.lastRecoverTap=now
+    end
+end)
+add(search:GetPropertyChangedSignal("Text"),function() refreshRoster() end)
+add(Players.PlayerAdded,function() refreshRoster() end)
+add(Players.PlayerRemoving,function(p) refreshRoster(p) end)
+
+-- X. SALIDA / REEJECUCION IDÉMPOTENTE.
+local function cleanup(fromDestroy)
+    if R.closed then return end
+    Camera.stop()
+    hideGameHUD(false)
+    restoreLighting()
+    R.closed=true
+    for _,connection in ipairs(R.connections) do pcall(function() connection:Disconnect() end) end
+    R.connections={}
+    if registry.__ArionFreecamV7Stop then registry.__ArionFreecamV7Stop=nil end
+    if not fromDestroy and gui.Parent then gui:Destroy() end
+end
+registry.__ArionFreecamV7Stop=function() cleanup(false) end
+add(gui.Destroying,function() cleanup(true) end)
+
+-- XI. PUBLICACION DE LA INTERFAZ ANTES DE ENCENDER LA CAMARA.
+setZoom(.5)
+refreshRoster()
+refreshUI()
+task.defer(function()
+    if not R.closed and gui.Parent then layout();refreshUI() end
+end)
+notice("Interfaz lista; AR abre el panel, CINE muestra control flotante")
+print("[Arion v7] GUI montada en: "..tostring(gui.Parent))
