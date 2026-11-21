@@ -1,13 +1,25 @@
--- Arion Freecam - Diagnostico de carga remota
-local URL = "https://raw.githubusercontent.com/ytexpo9-pixel/arion-frecam/main/Arion_Completa_v4B_Min_v6.lua"
-print("[Arion] Iniciando prueba de descarga")
-local okFetch, source = pcall(function() return game:HttpGet(URL) end)
-if not okFetch then warn("[Arion] Error HTTP:", source) return end
-if type(source) ~= "string" or #source == 0 then warn("[Arion] Respuesta vacia o invalida") return end
-print("[Arion] Descarga correcta. Bytes:", #source)
-local fn, err = loadstring(source)
-if not fn then warn("[Arion] Error de compilacion:", err) return end
-print("[Arion] Compilacion correcta; iniciando")
-local okRun, runtimeErr = pcall(fn)
-if not okRun then warn("[Arion] Error de ejecucion:", runtimeErr) return end
-print("[Arion] Chunk ejecutado; verificar GUI y consola si no aparece")
+-- Arion Freecam v7 | Diagnostico de carga remota para Delta.
+local URL="https://raw.githubusercontent.com/ytexpo9-pixel/arion-freecam/main/Arion_Freecam.lua"
+print("[Arion Loader] 1/4: consultando URL RAW...")
+local fetched,body=pcall(function() return game:HttpGet(URL) end)
+if not fetched then
+    warn("[Arion Loader] Error HTTP: "..tostring(body))
+    return
+end
+if type(body)~="string" or #body<100 then
+    warn("[Arion Loader] Respuesta vacia, corta o inesperada. Longitud: "..tostring(#body))
+    return
+end
+print("[Arion Loader] 2/4: bytes descargados: "..#body)
+local chunk,err=loadstring(body)
+if not chunk then
+    warn("[Arion Loader] Error al compilar: "..tostring(err))
+    return
+end
+print("[Arion Loader] 3/4: compilacion OK; ejecutando...")
+local ok,reason=pcall(chunk)
+if not ok then
+    warn("[Arion Loader] Error en arranque: "..tostring(reason))
+    return
+end
+print("[Arion Loader] 4/4: arranque OK (comprobar GUI AR y consola [Arion v7])")
