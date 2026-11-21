@@ -1,4 +1,4 @@
--- ARION FREECAM / v7.2.2 - camara restaurada y desplazamiento tactil, FOV invertido
+-- ARION FREECAM / v7.2.3 - scroll tactil estable por zonas, camara y FOV conservados
 -- Cliente Roblox (Delta movil + PC). Sin grabacion, sin anclar al personaje.
 -- Interfaz de pestañas, dock rapido, control CINE independiente, luz reversible,
 -- reset/deshacer integral. F8 o doble toque esquina superior izquierda: recuperar.
@@ -115,24 +115,33 @@ end
 local function findPos(root,obj)
     return obj.AbsolutePosition-root.AbsolutePosition
 end
--- El contenido de estas listas tiene alturas fijas. Calculamos el canvas
--- tambien cuando un deslizador o el selector de jugadores cambian de visibilidad.
+-- Canvas por contenido real de UIListLayout. El calculo manual queda solo
+-- como respaldo cuando el layout aun no ha sido medido en Roblox/Delta.
+local updatePageScroll
 local function resizeCanvas(frame,padding)
-    local height,count=12,0
-    for _,child in ipairs(frame:GetChildren()) do
-        if child.Visible and child.Size and
-            (child:IsA("Frame") or child:IsA("TextButton") or child:IsA("TextLabel")) then
-            height=height+child.Size.Y.Offset+child.Size.Y.Scale*frame.AbsoluteSize.Y
-            count=count+1
+    local height=0
+    local list=frame:FindFirstChildOfClass("UIListLayout")
+    if list and list.AbsoluteContentSize and list.AbsoluteContentSize.Y>0 then
+        height=math.ceil(list.AbsoluteContentSize.Y)+16
+    else
+        local count=0
+        height=12
+        for _,child in ipairs(frame:GetChildren()) do
+            if child.Visible and child.Size and
+                (child:IsA("Frame") or child:IsA("TextButton") or child:IsA("TextLabel")) then
+                height=height+child.Size.Y.Offset+child.Size.Y.Scale*frame.AbsoluteSize.Y
+                count=count+1
+            end
         end
+        height=math.ceil(height+math.max(0,count-1)*padding)
     end
-    height=math.max(0,math.ceil(height+math.max(0,count-1)*padding))
-    frame.CanvasSize=px(0,height)
+    frame.CanvasSize=px(0,math.max(0,height))
     local position=frame.CanvasPosition
-    if position then
-        local limit=math.max(0,height-frame.AbsoluteSize.Y)
-        if position.Y>limit then frame.CanvasPosition=Vector2.new(position.X,limit) end
+    local limit=math.max(0,height-frame.AbsoluteSize.Y)
+    if position and position.Y>limit then
+        frame.CanvasPosition=Vector2.new(position.X,limit)
     end
+    if updatePageScroll then updatePageScroll() end
 end
 local function copy(t)
     if not t then return nil end
@@ -242,13 +251,50 @@ end
 local pages={}
 for _,entry in ipairs(tabNames) do
     local page=make("ScrollingFrame",menu,{Name="Page"..entry[1],
-        Size=dim(1,-18,1,-181),Position=px(9,135),BackgroundTransparency=1,
-        ScrollBarThickness=5,ScrollBarImageColor3=C.accent,BorderSizePixel=0,
+        -- Reservar un pasillo tactil a la derecha: no cubre botones.
+        Size=dim(1,-46,1,-181),Position=px(9,135),BackgroundTransparency=1,
+        ScrollBarThickness=6,ScrollBarImageColor3=C.accent,BorderSizePixel=0,
         CanvasSize=px(0,0),AutomaticCanvasSize=Enum.AutomaticSize.None,
         ScrollingDirection=Enum.ScrollingDirection.Y,ScrollingEnabled=true,
         ClipsDescendants=true,Active=true,ZIndex=50,Visible=false})
     make("UIListLayout",page,{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,6)})
     pages[entry[1]]=page
+end
+-- Franja de desplazamiento INDEPENDIENTE de los botones del menu.
+-- Tocar las flechas o arrastrar el indicador no altera otros controles.
+local pageScrollZone=panel(menu,"PageScrollZone",px(22,89),dim(1,-30,0,135),C.surface,54,7)
+pageScrollZone.Active=true
+local pageScrollUp=button(pageScrollZone,"PageScrollUp","▲",dim(1,0,0,23),px(0,0),56,C.elevated)
+local pageScrollTrack=panel(pageScrollZone,"PageScrollTrack",dim(1,-4,1,-52),px(2,26),C.line,55,5)
+pageScrollTrack.Active=true
+local pageScrollThumb=panel(pageScrollTrack,"PageScrollThumb",dim(1,0,0,24),px(0,0),C.accent,57,5)
+pageScrollThumb.Active=true
+local pageScrollDown=button(pageScrollZone,"PageScrollDown","▼",dim(1,0,0,23),dim(0,0,1,-23),56,C.elevated)
+local function activeScrollPage()
+    return pages[S.tab]
+end
+local function scrollLimit(page)
+    return math.max(0,page.CanvasSize.Y.Offset-page.AbsoluteSize.Y)
+end
+updatePageScroll=function()
+    local page=activeScrollPage()
+    if not page then return end
+    local range=scrollLimit(page)
+    local travel=math.max(1,pageScrollTrack.AbsoluteSize.Y)
+    local height=math.min(travel,math.max(18,travel*page.AbsoluteSize.Y/
+        math.max(1,page.CanvasSize.Y.Offset)))
+    pageScrollThumb.Size=dim(1,0,0,math.floor(height+.5))
+    pageScrollThumb.Position=px(0,range>0 and math.floor((travel-height)*
+        math.clamp(page.CanvasPosition.Y/range,0,1)+.5) or 0)
+    pageScrollThumb.Visible=range>0
+    pageScrollUp.TextTransparency=range>0 and 0 or .65
+    pageScrollDown.TextTransparency=range>0 and 0 or .65
+end
+local function setPageScroll(y)
+    local page=activeScrollPage()
+    if not page then return end
+    page.CanvasPosition=Vector2.new(0,math.clamp(y,0,scrollLimit(page)))
+    updatePageScroll()
 end
 local status=text(menu,"Status","Listo",dim(1,-20,0,31),dim(0,11,1,-36),52,10)
 status.TextColor3=C.muted
@@ -339,7 +385,7 @@ end
 -- IV. CONTROLES DE VALOR: rail de gestos con actualizacion inmediata.
 local sliders={}
 local pointer={drag=nil,slider=nil,stick=nil,look=nil,lookAt=nil,mouseLook=false,
-    zoom=nil,scroll=nil,lastRecoverTap=-10}
+    zoom=nil,pageScroll=nil,lastRecoverTap=-10}
 local refreshUI
 local function vec(i) return Vector2.new(i.Position.X,i.Position.Y) end
 local function makeSlider(page,name,order,initial,titleFormatter,onValue)
@@ -368,12 +414,16 @@ local function makeSlider(page,name,order,initial,titleFormatter,onValue)
             local touch=i.UserInputType==Input.Touch
             local startPoint=vec(i)
             local activated=not touch
+            local cancelled=false
             pointer.slider={input=i,mouse=not touch,
                 update=function(p)
                     if touch and not activated then
                         local delta=p-startPoint
                         -- Un gesto vertical pertenece a la lista, no al FOV/slider.
-                        if math.abs(delta.Y)>8 and math.abs(delta.Y)>math.abs(delta.X) then return end
+                        if math.abs(delta.Y)>8 and math.abs(delta.Y)>math.abs(delta.X) then
+                            cancelled=true
+                            return
+                        end
                         if math.abs(delta.X)<6 or math.abs(delta.X)<math.abs(delta.Y)*1.15 then return end
                         activated=true
                     end
@@ -381,8 +431,7 @@ local function makeSlider(page,name,order,initial,titleFormatter,onValue)
                 end,
                 finish=function()
                     -- Un toque sin arrastrar sigue seleccionando el valor.
-                    local scroll=pointer.scroll
-                    if not activated and not (scroll and scroll.input==i and scroll.engaged) then
+                    if not activated and not cancelled then
                         item.set((startPoint.X-rail.AbsolutePosition.X)/math.max(1,rail.AbsoluteSize.X),true)
                     end
                 end}
@@ -500,10 +549,7 @@ local Camera={render="ArionFreecamV7Render",action="ArionFreecamV7Move"}
 local function resetInputs()
     pointer.stick=nil;pointer.look=nil;pointer.lookAt=nil;pointer.mouseLook=false
     pointer.slider=nil;pointer.zoom=nil
-    if pointer.scroll then
-        pointer.scroll.frame.ScrollingEnabled=true
-        pointer.scroll=nil
-    end
+    pointer.pageScroll=nil
     S.axis=Vector2.zero;S.rise=false;S.fall=false
     S.held={};S.cineHeld={}
     stick.Position=UDim2.fromScale(.5,.5)
@@ -802,10 +848,13 @@ local function layout()
         menu.Position=px(8,11)
     end
     -- La pagina se adapta a la altura real, sin fijar 420 px en pantallas pequenas.
+    local pageHeight=math.max(89,height-181)
     for _,page in pairs(pages) do
-        page.Size=dim(1,-18,0,math.max(89,height-181))
+        page.Size=dim(1,-46,0,pageHeight)
         resizeCanvas(page,6)
     end
+    pageScrollZone.Size=px(22,pageHeight)
+    updatePageScroll()
     local function bound(obj)
         local p=obj.Position
         clampPosition(root,obj,Vector2.new(size.X*p.X.Scale+p.X.Offset,
@@ -873,14 +922,15 @@ refreshUI=function()
     quickButton.Text=S.quickEnabled and "Barra rapida: ON" or "Barra rapida: OFF"
     undoPanel.Text=S.snapshot and "DESHACER RESET" or "DESHACER (sin registro)"
     for key,page in pairs(pages) do page.Visible=(S.tab==key) end
-    if pointer.scroll and (not menu.Visible or not pointer.scroll.frame.Visible) then
-        pointer.scroll.frame.ScrollingEnabled=true
-        pointer.scroll=nil
+    pageScrollZone.Visible=menu.Visible
+    if pointer.pageScroll and (not menu.Visible or pointer.pageScroll.tab~=S.tab) then
+        pointer.pageScroll=nil
     end
     for key,tabButton in pairs(tabItems) do
         tabButton.BackgroundColor3=S.tab==key and C.focus or C.button
     end
     for _,page in pairs(pages) do resizeCanvas(page,6) end
+    updatePageScroll()
 end
 local function setMode(value)
     S.mode=math.clamp(value,1,3)
@@ -889,10 +939,7 @@ local function setMode(value)
 end
 local function openPanel(open)
     S.panelOpen=open
-    if not open and pointer.scroll then
-        pointer.scroll.frame.ScrollingEnabled=true
-        pointer.scroll=nil
-    end
+    if not open then pointer.pageScroll=nil end
     refreshUI()
 end
 local function toggleCamera()
@@ -1097,41 +1144,50 @@ local function inside(obj,p)
     local a,b=obj.AbsolutePosition,obj.AbsoluteSize
     return p.X>=a.X and p.X<=a.X+b.X and p.Y>=a.Y and p.Y<=a.Y+b.Y
 end
-add(UIS.InputBegan,function(i)
-    if i.UserInputType~=Input.Touch or pointer.scroll or not menu.Visible then return end
-    local p=vec(i)
-    local frame=nil
-    if picker.Visible and pages.PLAYERS.Visible and inside(playerList,p) then
-        frame=playerList
-    else
-        for _,page in pairs(pages) do
-            if page.Visible and inside(page,p) then frame=page;break end
-        end
+-- Las listas usan el desplazamiento NATIVO de ScrollingFrame.
+-- Solo la franja lateral captura gestos, sin interferir con los botones.
+local function beginPageScroll(i,jump)
+    if not menu.Visible or pointer.pageScroll or pointer.drag or pointer.slider then return end
+    if i.UserInputType~=Input.Touch and i.UserInputType~=Input.MouseButton1 then return end
+    local page=activeScrollPage()
+    if not page or scrollLimit(page)<=0 then return end
+    local point=vec(i)
+    if jump then
+        local travel=math.max(1,pageScrollTrack.AbsoluteSize.Y-pageScrollThumb.AbsoluteSize.Y)
+        local offset=point.Y-pageScrollTrack.AbsolutePosition.Y-pageScrollThumb.AbsoluteSize.Y*.5
+        setPageScroll(offset/math.max(1,travel)*scrollLimit(page))
     end
-    if frame then
-        pointer.scroll={input=i,frame=frame,start=p,engaged=false,fromY=0}
+    pointer.pageScroll={input=i,mouse=i.UserInputType==Input.MouseButton1,
+        startY=point.Y,fromY=page.CanvasPosition.Y,tab=S.tab}
+end
+add(pageScrollTrack.InputBegan,function(i) beginPageScroll(i,true) end)
+add(pageScrollThumb.InputBegan,function(i) beginPageScroll(i,false) end)
+tap(pageScrollUp,function() setPageScroll(activeScrollPage().CanvasPosition.Y-132) end)
+tap(pageScrollDown,function() setPageScroll(activeScrollPage().CanvasPosition.Y+132) end)
+for _,page in pairs(pages) do
+    local list=page:FindFirstChildOfClass("UIListLayout")
+    if list then
+        add(list:GetPropertyChangedSignal("AbsoluteContentSize"),function()
+            resizeCanvas(page,6)
+        end)
     end
-end)
+    add(page:GetPropertyChangedSignal("CanvasPosition"),updatePageScroll)
+    add(page:GetPropertyChangedSignal("AbsoluteSize"),function() resizeCanvas(page,6) end)
+end
+local rosterLayout=playerList:FindFirstChildOfClass("UIListLayout")
+if rosterLayout then
+    add(rosterLayout:GetPropertyChangedSignal("AbsoluteContentSize"),function()
+        resizeCanvas(playerList,3)
+    end)
+end
 add(UIS.InputChanged,function(i)
     local point=vec(i)
-    local scroll=pointer.scroll
-    if scroll and scroll.input==i then
-        local delta=point-scroll.start
-        if scroll.engaged then
-            local maxY=math.max(0,scroll.frame.CanvasSize.Y.Offset-scroll.frame.AbsoluteSize.Y)
-            scroll.frame.CanvasPosition=Vector2.new(0,
-                math.clamp(scroll.fromY-delta.Y,0,maxY))
-            return
-        elseif math.abs(delta.Y)>8 and math.abs(delta.Y)>math.abs(delta.X)*1.15 then
-            scroll.engaged=true
-            scroll.fromY=scroll.frame.CanvasPosition.Y
-            scroll.start=point
-            scroll.frame.ScrollingEnabled=false
-            if pointer.slider and pointer.slider.input==i then pointer.slider=nil end
-            return
-        elseif math.abs(delta.X)>12 and math.abs(delta.X)>math.abs(delta.Y)*1.15 then
-            pointer.scroll=nil -- gesto horizontal: deslizador, no desplazamiento vertical
-        end
+    local dragPage=pointer.pageScroll
+    if dragPage and dragPage.tab==S.tab and
+        (dragPage.input==i or (dragPage.mouse and i.UserInputType==Input.MouseMovement)) then
+        local travel=math.max(1,pageScrollTrack.AbsoluteSize.Y-pageScrollThumb.AbsoluteSize.Y)
+        setPageScroll(dragPage.fromY+(point.Y-dragPage.startY)*scrollLimit(activeScrollPage())/travel)
+        return
     end
     local d=pointer.drag
     if d and (d.input==i or (d.mouse and i.UserInputType==Input.MouseMovement)) then
@@ -1170,9 +1226,10 @@ add(UIS.InputEnded,function(i)
         if s.finish then s.finish() end
         pointer.slider=nil
     end
-    if pointer.scroll and pointer.scroll.input==i then
-        pointer.scroll.frame.ScrollingEnabled=true
-        pointer.scroll=nil
+    if pointer.pageScroll and
+        (pointer.pageScroll.input==i or
+            (pointer.pageScroll.mouse and i.UserInputType==Input.MouseButton1)) then
+        pointer.pageScroll=nil
     end
     local z=pointer.zoom
     if z and (z.input==i or (z.mouse and i.UserInputType==Input.MouseButton1)) then
@@ -1214,7 +1271,7 @@ add(UIS.WindowFocusReleased,function()
     touchVertical.rise=nil;touchVertical.fall=nil;holdCine={}
 end)
 add(root:GetPropertyChangedSignal("AbsoluteSize"),function()
-    pointer.drag=nil;pointer.slider=nil;pointer.zoom=nil
+    pointer.drag=nil;pointer.slider=nil;pointer.zoom=nil;pointer.pageScroll=nil
     layout();refreshUI()
 end)
 
